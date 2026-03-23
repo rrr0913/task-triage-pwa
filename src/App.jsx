@@ -9,6 +9,7 @@ import {
   Archive,
   ChevronDown,
   ChevronUp,
+  CheckCircle2,
   ArrowDownAZ,
   ArrowUpZA,
   Activity,
@@ -112,8 +113,12 @@ export default function App() {
 
   // 設定：アーカイブ/削除済み管理モーダルの表示状態
   const [settingsManageView, setSettingsManageView] = useState(
-    /** @type {null | 'archived' | 'deleted'} */ (null),
+    /** @type {null | 'completed' | 'archived' | 'deleted'} */ (null),
   );
+
+  // List：スワイプ中の追従用（なめらかさ向上）
+  const [swipeDragTaskId, setSwipeDragTaskId] = useState(null);
+  const [swipeDragDeltaX, setSwipeDragDeltaX] = useState(0);
 
   // --- オフライン検知 ---
   useEffect(() => {
@@ -202,12 +207,16 @@ export default function App() {
     );
     setExpandedTaskId(null);
     setSwipeRevealTaskId(null);
+    setSwipeDragTaskId(null);
+    setSwipeDragDeltaX(0);
   };
 
   const deleteTaskPermanently = (id) => {
     setTasks((prev) => prev.filter((t) => t.id !== id));
     setExpandedTaskId(null);
     setSwipeRevealTaskId(null);
+    setSwipeDragTaskId(null);
+    setSwipeDragDeltaX(0);
   };
 
   // ソート処理
@@ -274,8 +283,9 @@ export default function App() {
     const stroke = rgbToCss(pick.r, pick.g, pick.b);
     const fill = rgbaToCss(pick.r, pick.g, pick.b, 0.16);
 
-    const circleSize = 88 + t * 40;
-    const fontSize = 54 + t * 10;
+    // スコアに応じて正円を「大きく」しない（色だけ滑らかに変える）
+    const circleSize = 108;
+    const fontSize = 60;
 
     const isUrgent = currentTask.urgency >= 4;
 
@@ -297,7 +307,7 @@ export default function App() {
             style={{
               width: `${circleSize}px`,
               height: `${circleSize}px`,
-              transition: 'width 450ms ease, height 450ms ease',
+              transition: 'width 0ms linear, height 0ms linear',
             }}
           >
             <div
@@ -411,22 +421,48 @@ export default function App() {
     const TaskCard = ({ task }) => {
       const isExpanded = expandedTaskId === task.id;
       const isRevealed = swipeRevealTaskId === task.id;
+      const isDragging = swipeDragTaskId === task.id;
+      const clampedDragX = Math.min(0, Math.max(-ACTION_WIDTH, swipeDragDeltaX));
 
       const swipeHandlers = useSwipeable({
+        onSwiping: ({ dir, deltaX }) => {
+          if (dir === 'Left') {
+            setSwipeDragTaskId(task.id);
+            setSwipeDragDeltaX(deltaX);
+            // ドラッグ中は一旦操作ボタンを閉じる（途中の見え方を滑らかにする）
+            if (swipeRevealTaskId === task.id) setSwipeRevealTaskId(null);
+          }
+          if (dir === 'Right') {
+            // 既にボタンを出している場合、右ドラッグで閉じる
+            if (swipeRevealTaskId === task.id) {
+              setSwipeRevealTaskId(null);
+            }
+            setSwipeDragTaskId(task.id);
+            setSwipeDragDeltaX(0);
+          }
+        },
+        onSwipeEnd: () => {
+          setSwipeDragTaskId(null);
+          setSwipeDragDeltaX(0);
+        },
         onSwipedRight: () => updateTaskStatus(task.id, 'completed'),
         onSwipedLeft: () => {
           setSwipeRevealTaskId(task.id);
           setExpandedTaskId(null);
+          setSwipeDragTaskId(null);
+          setSwipeDragDeltaX(0);
         },
-        delta: 35,
+        delta: 25,
         trackMouse: false,
         preventScrollOnSwipe: true,
       });
 
       const toggleExpanded = () => {
         // スワイプで操作ボタンが開いている状態では、まずは閉じる（勝手に開閉しない）
-        if (swipeRevealTaskId === task.id) {
+        if (swipeRevealTaskId === task.id || swipeDragTaskId === task.id) {
           setSwipeRevealTaskId(null);
+          setSwipeDragTaskId(null);
+          setSwipeDragDeltaX(0);
           return;
         }
         setSwipeRevealTaskId(null);
@@ -456,8 +492,12 @@ export default function App() {
             {...swipeHandlers}
             className="relative z-10 bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden"
             style={{
-              transform: isRevealed ? `translateX(-${ACTION_WIDTH}px)` : 'translateX(0px)',
-              transition: 'transform 220ms ease',
+              transform: isRevealed
+                ? `translateX(-${ACTION_WIDTH}px)`
+                : isDragging
+                  ? `translateX(${clampedDragX}px)`
+                  : 'translateX(0px)',
+              transition: isDragging ? 'none' : 'transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1)',
             }}
           >
             <div className="p-3 flex items-start gap-3">
@@ -550,12 +590,18 @@ export default function App() {
   const renderSettingsTab = () => {
     const archivedTasks = tasks.filter((t) => t.status === 'archived');
     const deletedTasks = tasks.filter((t) => t.status === 'deleted');
+    const completedTasks = tasks.filter((t) => t.status === 'completed');
 
     const renderManageModal = () => {
       if (!settingsManageView) return null;
 
+      const isCompletedView = settingsManageView === 'completed';
       const isArchivedView = settingsManageView === 'archived';
-      const modalTasks = isArchivedView ? archivedTasks : deletedTasks;
+      const modalTasks = isArchivedView
+        ? archivedTasks
+        : isCompletedView
+          ? completedTasks
+          : deletedTasks;
 
       return (
         <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm">
@@ -563,10 +609,16 @@ export default function App() {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
-                  {isArchivedView ? <Archive size={18} /> : <Trash2 size={18} />}
+                  {isCompletedView ? (
+                    <CheckCircle2 size={18} />
+                  ) : isArchivedView ? (
+                    <Archive size={18} />
+                  ) : (
+                    <Trash2 size={18} />
+                  )}
                 </div>
                 <h3 className="font-black text-lg text-gray-900">
-                  {isArchivedView ? 'アーカイブ済み' : '削除済み'}
+                  {isCompletedView ? '完了済み' : isArchivedView ? 'アーカイブ済み' : '削除済み'}
                 </h3>
               </div>
               <button
@@ -609,14 +661,14 @@ export default function App() {
                         >
                           元に戻す
                         </button>
-                        <button
-                          onClick={() => deleteTaskPermanently(task.id)}
-                          className={`flex-1 py-2 font-bold rounded-xl text-xs ${
-                            isArchivedView ? 'bg-red-600 text-white' : 'bg-red-600 text-white'
-                          }`}
-                        >
-                          完全削除
-                        </button>
+                        {!isCompletedView && (
+                          <button
+                            onClick={() => deleteTaskPermanently(task.id)}
+                            className="flex-1 py-2 font-bold rounded-xl text-xs bg-red-600 text-white"
+                          >
+                            完全削除
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -689,16 +741,22 @@ export default function App() {
           {/* アーカイブ/削除済み管理 */}
           <div className="bg-white border border-gray-100 rounded-3xl p-4 shadow-sm">
             <div className="font-bold text-gray-900 text-sm mb-3">タスク管理</div>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => setSettingsManageView('archived')}
-                className="flex-1 py-3 bg-gray-100 text-gray-800 font-bold rounded-2xl text-sm"
+                className="py-3 bg-gray-100 text-gray-800 font-bold rounded-2xl text-sm"
               >
                 アーカイブ（{archivedTasks.length}）
               </button>
               <button
+                onClick={() => setSettingsManageView('completed')}
+                className="py-3 bg-indigo-50 text-indigo-700 font-bold rounded-2xl text-sm"
+              >
+                完了（{completedTasks.length}）
+              </button>
+              <button
                 onClick={() => setSettingsManageView('deleted')}
-                className="flex-1 py-3 bg-red-50 text-red-700 font-bold rounded-2xl text-sm"
+                className="col-span-2 py-3 bg-red-50 text-red-700 font-bold rounded-2xl text-sm"
               >
                 削除済み（{deletedTasks.length}）
               </button>
