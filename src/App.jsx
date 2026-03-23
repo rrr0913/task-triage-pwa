@@ -1,10 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useSwipeable } from 'react-swipeable';
 import {
   Calculator,
   ListTodo,
   Settings,
   Info,
   Trash2,
+  Archive,
+  ChevronDown,
+  ChevronUp,
   ArrowDownAZ,
   ArrowUpZA,
   Activity,
@@ -16,7 +20,7 @@ const CRITERIA_KEYS = ['value', 'urgency', 'irreplaceability', 'relation', 'cost
 
 const CRITERIA_INFO = {
   value: {
-    title: '価値・リターン',
+    title: 'リターン',
     desc: '重要度。社会のためになるか、お金に繋がるか、将来の資産やスキルになるか。',
     color: 'bg-blue-500',
     text: 'text-blue-600',
@@ -40,7 +44,7 @@ const CRITERIA_INFO = {
     text: 'text-pink-600',
   },
   cost: {
-    title: '手軽さ (低コスト)',
+    title: '手軽さ',
     desc: 'かかる時間や労力の少なさ。すぐ終わる、精神的負担が少ないものほど高得点（優先度アップ）。',
     color: 'bg-emerald-500',
     text: 'text-emerald-600',
@@ -83,7 +87,8 @@ export default function App() {
       // 日付文字列をDateオブジェクトに戻す
       return JSON.parse(savedTasks).map((task) => ({
         ...task,
-        updatedAt: new Date(task.updatedAt),
+        status: task.status ?? 'active',
+        updatedAt: task.updatedAt instanceof Date ? task.updatedAt : new Date(task.updatedAt),
       }));
     }
     return [];
@@ -98,6 +103,17 @@ export default function App() {
   // スコアのアニメーション用State
   const [displayScore, setDisplayScore] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
+
+  // リスト：開いているタスク（アコーディオン）
+  const [expandedTaskId, setExpandedTaskId] = useState(null);
+
+  // リスト：左スワイプでアクションを表示しているタスク
+  const [swipeRevealTaskId, setSwipeRevealTaskId] = useState(null);
+
+  // 設定：アーカイブ/削除済み管理モーダルの表示状態
+  const [settingsManageView, setSettingsManageView] = useState(
+    /** @type {null | 'archived' | 'deleted'} */ (null),
+  );
 
   // --- オフライン検知 ---
   useEffect(() => {
@@ -153,6 +169,7 @@ export default function App() {
     const newTask = {
       id: Date.now().toString(),
       ...currentTask,
+      status: 'active',
       totalScore: currentTotalScore,
       updatedAt: new Date(),
     };
@@ -171,8 +188,26 @@ export default function App() {
     setActiveTab('list');
   };
 
-  const handleDeleteTask = (id) => {
+  const updateTaskStatus = (id, status) => {
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              status,
+              updatedAt: new Date(),
+            }
+          : t,
+      ),
+    );
+    setExpandedTaskId(null);
+    setSwipeRevealTaskId(null);
+  };
+
+  const deleteTaskPermanently = (id) => {
     setTasks((prev) => prev.filter((t) => t.id !== id));
+    setExpandedTaskId(null);
+    setSwipeRevealTaskId(null);
   };
 
   // ソート処理
@@ -185,7 +220,7 @@ export default function App() {
   };
 
   const sortedTasks = useMemo(() => {
-    const sortableTasks = [...tasks];
+    const sortableTasks = tasks.filter((t) => t.status === 'active');
     sortableTasks.sort((a, b) => {
       if (a[sortConfig.key] < b[sortConfig.key]) {
         return sortConfig.direction === 'asc' ? -1 : 1;
@@ -198,126 +233,283 @@ export default function App() {
     return sortableTasks;
   }, [tasks, sortConfig]);
 
+  const activeTaskCount = useMemo(
+    () => tasks.filter((t) => t.status === 'active').length,
+    [tasks],
+  );
+
   // --- コンポーネント群 ---
+  const clamp01 = (n) => Math.min(1, Math.max(0, n));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rgbToCss = (r, g, b) => `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+  const rgbaToCss = (r, g, b, a) =>
+    `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${a})`;
+  const lerpColor = (c1, c2, t) => {
+    const r = lerp(c1[0], c2[0], t);
+    const g = lerp(c1[1], c2[1], t);
+    const b = lerp(c1[2], c2[2], t);
+    return { r, g, b };
+  };
+
   const formatDate = (date) => {
-    return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:${String(
-      date.getMinutes(),
-    ).padStart(2, '0')}`;
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    return `${mm}/${dd} ${hh}:${min}`;
   };
 
   // 1. 計算タブ
   const renderCalculateTab = () => {
-    // 緊急度による色とアニメーションのクラスを決定
+    const minTotal = CRITERIA_KEYS.reduce((sum, key) => sum + 1 * weights[key], 0);
+    const maxTotal = CRITERIA_KEYS.reduce((sum, key) => sum + 5 * weights[key], 0);
+    const range = Math.max(0.0001, maxTotal - minTotal);
+    const t = clamp01((displayScore - minTotal) / range);
+
+    const blue = [79, 70, 229]; // indigo-600
+    const yellow = [245, 158, 11]; // amber-500
+    const red = [239, 68, 68]; // red-500
+
+    const pick = t < 0.5 ? lerpColor(blue, yellow, t * 2) : lerpColor(yellow, red, (t - 0.5) * 2);
+    const stroke = rgbToCss(pick.r, pick.g, pick.b);
+    const fill = rgbaToCss(pick.r, pick.g, pick.b, 0.16);
+
+    const circleSize = 88 + t * 40;
+    const fontSize = 54 + t * 10;
+
     const isUrgent = currentTask.urgency >= 4;
-    const scoreColorClass = isUrgent ? 'text-red-500' : 'text-indigo-600';
-    const bgPulseClass = isUrgent
-      ? 'animate-pulse bg-red-50 border-red-200'
-      : 'bg-white border-indigo-100';
 
     return (
-      <div className="p-4 space-y-6 pb-24">
+      <div className="p-4 flex flex-col h-full pb-20 gap-4 overflow-hidden">
         {/* スコア表示エリア */}
         <div
-          className={`rounded-2xl border-2 p-6 text-center shadow-sm transition-all duration-300 ${bgPulseClass}`}
+          className={`flex-shrink-0 rounded-3xl border p-4 text-center shadow-sm transition-colors ${
+            isUrgent ? 'border-red-200 bg-red-50/40' : 'border-indigo-200 bg-white'
+          }`}
         >
-          <h2 className="text-sm font-bold text-gray-500 mb-2 flex items-center justify-center gap-2">
-            <Activity
-              size={16}
-              className={isUrgent ? 'text-red-500' : 'text-gray-400'}
-            />
+          <h2 className="text-sm font-bold text-gray-600 mb-2 flex items-center justify-center gap-2">
+            <Activity size={16} className={isUrgent ? 'text-red-500' : 'text-indigo-600'} />
             リアルタイム優先度スコア
           </h2>
+
           <div
-            className={`text-6xl font-black tabular-nums transition-transform duration-200 ${scoreColorClass} ${
-              isAnimating ? 'scale-110' : 'scale-100'
-            }`}
+            className="relative mx-auto flex items-center justify-center"
+            style={{
+              width: `${circleSize}px`,
+              height: `${circleSize}px`,
+              transition: 'width 450ms ease, height 450ms ease',
+            }}
           >
-            {displayScore}
+            <div
+              className="absolute inset-0 rounded-full"
+              style={{
+                backgroundColor: fill,
+                border: `2px solid ${stroke}`,
+                transition: 'background-color 450ms ease, border-color 450ms ease',
+              }}
+            />
+            <div
+              className="relative z-10 font-black tabular-nums leading-none"
+              style={{
+                fontSize,
+                color: stroke,
+                transition: 'font-size 450ms ease, color 450ms ease, transform 450ms ease',
+                transform: isAnimating ? 'scale(1.04)' : 'scale(1)',
+              }}
+            >
+              {displayScore}
+            </div>
           </div>
-          {isUrgent && (
-            <p className="text-xs font-bold text-red-500 mt-2">🔥 緊急タスクです！</p>
-          )}
+
+          {isUrgent && <p className="text-xs font-bold text-red-500 mt-2">🔥 緊急タスクです！</p>}
         </div>
 
         {/* 入力フォーム */}
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-bold text-gray-700 mb-1">タスク名</label>
-            <input
-              type="text"
-              value={currentTask.name}
-              onChange={(e) => setCurrentTask({ ...currentTask, name: e.target.value })}
-              placeholder="例：A社へのプレゼン資料作成"
-              className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
-            />
-          </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="space-y-3">
+            <div>
+              <label className="sr-only">タスク名</label>
+              <input
+                type="text"
+                value={currentTask.name}
+                onChange={(e) => setCurrentTask({ ...currentTask, name: e.target.value })}
+                placeholder="タスク名"
+                className="w-full p-3 border border-gray-300 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all placeholder:text-gray-400"
+              />
+            </div>
 
-          <div className="space-y-5 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
-            {CRITERIA_KEYS.map((key) => {
-              const info = CRITERIA_INFO[key];
-              return (
-                <div key={key} className="space-y-1">
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-1">
-                      <span className={`text-sm font-bold ${info.text}`}>{info.title}</span>
-                      <button
-                        onClick={() => setInfoModalContent(key)}
-                        className="p-1 text-gray-400 hover:text-indigo-500 transition-colors rounded-full"
-                      >
-                        <Info size={14} />
-                      </button>
+            <div className="space-y-3 bg-white p-3 rounded-3xl border border-gray-100 shadow-sm">
+              {CRITERIA_KEYS.map((key) => {
+                const info = CRITERIA_INFO[key];
+                return (
+                  <div key={key} className="space-y-1">
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-1">
+                        <span className={`text-sm font-bold ${info.text}`}>{info.title}</span>
+                        <button
+                          onClick={() => setInfoModalContent(key)}
+                          className="p-1 text-gray-400 hover:text-indigo-500 transition-colors rounded-full"
+                          aria-label={`${info.title}の説明`}
+                        >
+                          <Info size={14} />
+                        </button>
+                      </div>
+                      <span className="text-sm font-bold bg-gray-100 px-2 py-0.5 rounded-xl w-8 text-center">
+                        {currentTask[key]}
+                      </span>
                     </div>
-                    <span className="text-sm font-bold bg-gray-100 px-2 py-0.5 rounded-md w-8 text-center">
-                      {currentTask[key]}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min="1"
-                    max="5"
-                    step="1"
-                    value={currentTask[key]}
-                    onChange={(e) =>
-                      setCurrentTask({ ...currentTask, [key]: Number(e.target.value) })
-                    }
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-                  />
-                  <div className="flex justify-between text-[10px] text-gray-400 font-medium px-1">
-                    <span>低い (1)</span>
-                    <span>高い (5)</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
 
-          <button
-            onClick={handleSaveTask}
-            disabled={!currentTask.name.trim()}
-            className="w-full py-4 bg-indigo-600 text-white font-bold rounded-xl shadow-md disabled:bg-gray-300 disabled:cursor-not-allowed active:scale-95 transition-all flex justify-center items-center gap-2"
-          >
-            <ListTodo size={20} />
-            リストに登録する
-          </button>
+                    <input
+                      type="range"
+                      min="1"
+                      max="5"
+                      step="1"
+                      value={currentTask[key]}
+                      onChange={(e) =>
+                        setCurrentTask({ ...currentTask, [key]: Number(e.target.value) })
+                      }
+                      className="w-full h-2 bg-gray-200 rounded-full appearance-none cursor-pointer accent-indigo-600
+                      [&::-webkit-slider-thumb]:appearance-none
+                      [&::-webkit-slider-thumb]:w-6
+                      [&::-webkit-slider-thumb]:h-6
+                      [&::-webkit-slider-thumb]:rounded-full
+                      [&::-webkit-slider-thumb]:bg-indigo-600
+                      [&::-webkit-slider-thumb]:border-2
+                      [&::-webkit-slider-thumb]:border-white
+                      [&::-webkit-slider-thumb]:shadow-sm
+                      [&::-moz-range-thumb]:w-6
+                      [&::-moz-range-thumb]:h-6
+                      [&::-moz-range-thumb]:rounded-full
+                      [&::-moz-range-thumb]:bg-indigo-600
+                      [&::-moz-range-thumb]:border-2
+                      [&::-moz-range-thumb]:border-white"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
+
+        {/* 下部固定っぽい登録ボタン（スクロールせずに押せる） */}
+        <button
+          onClick={handleSaveTask}
+          disabled={!currentTask.name.trim()}
+          className="w-full py-3 bg-indigo-600 text-white font-bold rounded-2xl shadow-md disabled:bg-gray-300 disabled:cursor-not-allowed active:scale-95 transition-all flex justify-center items-center gap-2 mt-auto"
+        >
+          <ListTodo size={20} />
+          リストに登録する
+        </button>
       </div>
     );
   };
 
   // 2. タスクリストタブ
   const renderListTab = () => {
+    const ACTION_WIDTH = 160;
+
+    const TaskCard = ({ task }) => {
+      const isExpanded = expandedTaskId === task.id;
+      const isRevealed = swipeRevealTaskId === task.id;
+
+      const swipeHandlers = useSwipeable({
+        onSwipedRight: () => updateTaskStatus(task.id, 'completed'),
+        onSwipedLeft: () => {
+          setSwipeRevealTaskId(task.id);
+          setExpandedTaskId(null);
+        },
+        delta: 35,
+        trackMouse: false,
+        preventScrollOnSwipe: true,
+      });
+
+      const toggleExpanded = () => {
+        // スワイプで操作ボタンが開いている状態では、まずは閉じる（勝手に開閉しない）
+        if (swipeRevealTaskId === task.id) {
+          setSwipeRevealTaskId(null);
+          return;
+        }
+        setSwipeRevealTaskId(null);
+        setExpandedTaskId((prev) => (prev === task.id ? null : task.id));
+      };
+
+      return (
+        <div className="relative">
+          {/* 左スワイプ時に右側から出てくる操作ボタン */}
+          <div className="absolute inset-y-0 right-0 w-[160px] z-0 flex">
+            <button
+              onClick={() => updateTaskStatus(task.id, 'archived')}
+              className="flex-1 bg-amber-50 text-amber-700 border border-amber-100 font-bold text-xs rounded-l-3xl"
+            >
+              アーカイブ
+            </button>
+            <button
+              onClick={() => updateTaskStatus(task.id, 'deleted')}
+              className="flex-1 bg-red-50 text-red-700 border border-red-100 font-bold text-xs rounded-r-3xl"
+            >
+              削除
+            </button>
+          </div>
+
+          {/* フォアグラウンドカード（スワイプでスライド） */}
+          <div
+            {...swipeHandlers}
+            className="relative z-10 bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden"
+            style={{
+              transform: isRevealed ? `translateX(-${ACTION_WIDTH}px)` : 'translateX(0px)',
+              transition: 'transform 220ms ease',
+            }}
+          >
+            <div className="p-3 flex items-start gap-3">
+              <button
+                type="button"
+                onClick={toggleExpanded}
+                className="flex-1 text-left"
+                aria-label={isExpanded ? '折りたたむ' : '展開する'}
+              >
+                <div className="font-bold text-gray-900 text-sm leading-snug">{task.name}</div>
+                <div className="mt-1 text-xs text-gray-500">{formatDate(task.updatedAt)}</div>
+              </button>
+              <div className="shrink-0 text-gray-400 mt-0.5">
+                {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+              </div>
+            </div>
+
+            <div className="px-3 pb-3 text-xs font-semibold text-indigo-600">
+              スコア {task.totalScore}
+            </div>
+
+            {isExpanded && (
+              <div className="px-3 pb-3">
+                <div className="flex flex-nowrap gap-2 overflow-x-auto">
+                  {CRITERIA_KEYS.map((key) => (
+                    <span
+                      key={key}
+                      className={`text-[11px] px-2.5 py-1 rounded-full border font-bold ${CRITERIA_INFO[key].text} border-current/15 bg-current/5 whitespace-nowrap`}
+                    >
+                      {CRITERIA_INFO[key].title} {task[key]}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     return (
       <div className="p-4 space-y-4 pb-24 h-full flex flex-col">
-        <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-gray-200 shadow-sm">
+        <div className="flex justify-between items-center bg-white p-3 rounded-3xl border border-gray-200 shadow-sm">
           <span className="text-sm font-bold text-gray-700">並べ替え:</span>
           <select
             value={sortConfig.key}
             onChange={(e) => handleSort(e.target.value)}
-            className="text-sm border-gray-300 rounded-lg bg-gray-50 p-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
+            className="text-sm border-gray-300 rounded-2xl bg-gray-50 p-1.5 outline-none focus:ring-2 focus:ring-indigo-500"
           >
             <option value="totalScore">総合スコア</option>
             <option value="urgency">緊急度</option>
-            <option value="value">価値・リターン</option>
+            <option value="value">リターン</option>
             <option value="irreplaceability">代替不可能性</option>
             <option value="relation">関係資本</option>
             <option value="cost">手軽さ</option>
@@ -325,7 +517,7 @@ export default function App() {
           </select>
           <button
             onClick={() => handleSort(sortConfig.key)}
-            className="p-1.5 bg-gray-100 rounded-lg hover:bg-gray-200"
+            className="p-1.5 bg-gray-100 rounded-2xl hover:bg-gray-200"
           >
             {sortConfig.direction === 'desc' ? (
               <ArrowDownAZ size={18} />
@@ -346,48 +538,7 @@ export default function App() {
             </div>
           ) : (
             sortedTasks.map((task) => (
-              <div
-                key={task.id}
-                className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden"
-              >
-                {/* 緊急度が高い場合のアクセント線 */}
-                {task.urgency >= 4 && (
-                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500"></div>
-                )}
-
-                <div className="flex justify-between items-start mb-2">
-                  <h3 className="font-bold text-gray-800 pr-8">{task.name}</h3>
-                  <div className="text-right">
-                    <div className="text-2xl font-black text-indigo-600 tabular-nums leading-none">
-                      {task.totalScore}
-                    </div>
-                    <div className="text-[10px] text-gray-400 mt-1">pts</div>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {CRITERIA_KEYS.map((key) => (
-                    <span
-                      key={key}
-                      className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
-                        CRITERIA_INFO[key].text
-                      } border-current opacity-80`}
-                    >
-                      {CRITERIA_INFO[key].title.split(' ')[0]}: {task[key]}
-                    </span>
-                  ))}
-                </div>
-
-                <div className="flex justify-between items-center text-xs text-gray-400 border-t pt-2 border-gray-100">
-                  <span>更新: {formatDate(task.updatedAt)}</span>
-                  <button
-                    onClick={() => handleDeleteTask(task.id)}
-                    className="text-red-400 hover:text-red-600 p-1"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
+              <TaskCard key={task.id} task={task} />
             ))
           )}
         </div>
@@ -397,8 +548,87 @@ export default function App() {
 
   // 3. 設定タブ
   const renderSettingsTab = () => {
+    const archivedTasks = tasks.filter((t) => t.status === 'archived');
+    const deletedTasks = tasks.filter((t) => t.status === 'deleted');
+
+    const renderManageModal = () => {
+      if (!settingsManageView) return null;
+
+      const isArchivedView = settingsManageView === 'archived';
+      const modalTasks = isArchivedView ? archivedTasks : deletedTasks;
+
+      return (
+        <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl p-4 max-w-md w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
+                  {isArchivedView ? <Archive size={18} /> : <Trash2 size={18} />}
+                </div>
+                <h3 className="font-black text-lg text-gray-900">
+                  {isArchivedView ? 'アーカイブ済み' : '削除済み'}
+                </h3>
+              </div>
+              <button
+                onClick={() => setSettingsManageView(null)}
+                className="p-2 rounded-xl hover:bg-gray-100"
+                aria-label="閉じる"
+              >
+                ✕
+              </button>
+            </div>
+
+            {modalTasks.length === 0 ? (
+              <div className="text-center text-gray-500 py-10">
+                タスクはありません。
+              </div>
+            ) : (
+              <div className="max-h-[55vh] overflow-y-auto space-y-2 pr-1">
+                {modalTasks
+                  .slice()
+                  .sort((a, b) => b.updatedAt - a.updatedAt)
+                  .map((task) => (
+                    <div
+                      key={task.id}
+                      className="bg-gray-50 border border-gray-100 rounded-2xl p-3"
+                    >
+                      <div className="font-bold text-gray-900 text-sm leading-snug">
+                        {task.name}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        更新: {formatDate(task.updatedAt)}
+                      </div>
+                      <div className="mt-1 text-xs font-semibold text-indigo-700">
+                        スコア {task.totalScore}
+                      </div>
+
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          onClick={() => updateTaskStatus(task.id, 'active')}
+                          className="flex-1 py-2 bg-indigo-600 text-white font-bold rounded-xl text-xs"
+                        >
+                          元に戻す
+                        </button>
+                        <button
+                          onClick={() => deleteTaskPermanently(task.id)}
+                          className={`flex-1 py-2 font-bold rounded-xl text-xs ${
+                            isArchivedView ? 'bg-red-600 text-white' : 'bg-red-600 text-white'
+                          }`}
+                        >
+                          完全削除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     return (
-      <div className="p-4 space-y-6 pb-24">
+      <div className="p-4 flex flex-col h-full pb-20 gap-4 overflow-hidden">
         <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl text-sm text-indigo-800 space-y-2">
           <p className="font-bold flex items-center gap-2">
             <Settings size={18} /> スコアの重み付け設定
@@ -408,39 +638,75 @@ export default function App() {
           </p>
         </div>
 
-        <div className="space-y-6 bg-white p-5 rounded-xl border border-gray-100 shadow-sm">
-          {CRITERIA_KEYS.map((key) => {
-            const info = CRITERIA_INFO[key];
-            return (
-              <div key={key} className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className={`text-sm font-bold ${info.text}`}>{info.title}</span>
-                  <span className="text-sm font-black text-gray-700 bg-gray-100 px-2 py-1 rounded-md w-12 text-center">
-                    x{weights[key].toFixed(1)}
-                  </span>
+        <div className="flex-1 min-h-0 overflow-hidden space-y-3">
+          <div className="space-y-3 bg-white p-4 rounded-3xl border border-gray-100 shadow-sm">
+            {CRITERIA_KEYS.map((key) => {
+              const info = CRITERIA_INFO[key];
+              return (
+                <div key={key} className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className={`text-sm font-bold ${info.text}`}>{info.title}</span>
+                    <span className="text-sm font-black text-gray-700 bg-gray-100 px-2 py-1 rounded-xl w-12 text-center">
+                      x{weights[key].toFixed(1)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="3.0"
+                    step="0.1"
+                    value={weights[key]}
+                    onChange={(e) => {
+                      const newWeights = { ...weights, [key]: Number(e.target.value) };
+                      setWeights(newWeights);
+                      const updatedTasks = tasks.map((t) => ({
+                        ...t,
+                        totalScore: calculateTotalScore(t, newWeights),
+                      }));
+                      setTasks(updatedTasks);
+                    }}
+                    className="w-full h-2 bg-gray-200 rounded-full appearance-none cursor-pointer accent-gray-700
+                    [&::-webkit-slider-thumb]:appearance-none
+                    [&::-webkit-slider-thumb]:w-6
+                    [&::-webkit-slider-thumb]:h-6
+                    [&::-webkit-slider-thumb]:rounded-full
+                    [&::-webkit-slider-thumb]:bg-indigo-600
+                    [&::-webkit-slider-thumb]:border-2
+                    [&::-webkit-slider-thumb]:border-white
+                    [&::-webkit-slider-thumb]:shadow-sm
+                    [&::-moz-range-thumb]:w-6
+                    [&::-moz-range-thumb]:h-6
+                    [&::-moz-range-thumb]:rounded-full
+                    [&::-moz-range-thumb]:bg-indigo-600
+                    [&::-moz-range-thumb]:border-2
+                    [&::-moz-range-thumb]:border-white"
+                  />
                 </div>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="3.0"
-                  step="0.1"
-                  value={weights[key]}
-                  onChange={(e) => {
-                    const newWeights = { ...weights, [key]: Number(e.target.value) };
-                    setWeights(newWeights);
-                    // 登録済みタスクのスコアも再計算する場合
-                    const updatedTasks = tasks.map((t) => ({
-                      ...t,
-                      totalScore: calculateTotalScore(t, newWeights),
-                    }));
-                    setTasks(updatedTasks);
-                  }}
-                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-700"
-                />
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+
+          {/* アーカイブ/削除済み管理 */}
+          <div className="bg-white border border-gray-100 rounded-3xl p-4 shadow-sm">
+            <div className="font-bold text-gray-900 text-sm mb-3">タスク管理</div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSettingsManageView('archived')}
+                className="flex-1 py-3 bg-gray-100 text-gray-800 font-bold rounded-2xl text-sm"
+              >
+                アーカイブ（{archivedTasks.length}）
+              </button>
+              <button
+                onClick={() => setSettingsManageView('deleted')}
+                className="flex-1 py-3 bg-red-50 text-red-700 font-bold rounded-2xl text-sm"
+              >
+                削除済み（{deletedTasks.length}）
+              </button>
+            </div>
+          </div>
         </div>
+
+        {renderManageModal()}
       </div>
     );
   };
@@ -466,8 +732,8 @@ export default function App() {
           </div>
         )}
 
-        {/* メインコンテンツエリア (スクロール可) */}
-        <main className="flex-1 overflow-y-auto">
+        {/* メインコンテンツエリア（タブごとにスクロール制御） */}
+        <main className="flex-1 overflow-hidden">
           {activeTab === 'calculate' && renderCalculateTab()}
           {activeTab === 'list' && renderListTab()}
           {activeTab === 'settings' && renderSettingsTab()}
@@ -499,9 +765,9 @@ export default function App() {
           >
             <div className="relative">
               <ListTodo size={22} />
-              {tasks.length > 0 && (
+              {activeTaskCount > 0 && (
                 <span className="absolute -top-1 -right-2 bg-red-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full border-2 border-white">
-                  {tasks.length}
+                  {activeTaskCount}
                 </span>
               )}
             </div>
