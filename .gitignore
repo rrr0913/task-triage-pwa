@@ -1,0 +1,10 @@
+node_modules/
+dev-dist/
+vercel/
+.vercel/
+.vscode/
+.idea/
+.tools/
+.DS_Store
+._*
+
