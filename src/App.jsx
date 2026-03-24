@@ -8,7 +8,6 @@ import {
   Trash2,
   Archive,
   ChevronDown,
-  ChevronUp,
   CheckCircle2,
   ArrowDownAZ,
   ArrowUpZA,
@@ -105,9 +104,6 @@ export default function App() {
   const [displayScore, setDisplayScore] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
 
-  // リスト：開いているタスク（アコーディオン）
-  const [expandedTaskId, setExpandedTaskId] = useState(null);
-
   // リスト：左スワイプでアクションを表示しているタスク
   const [swipeRevealTaskId, setSwipeRevealTaskId] = useState(null);
 
@@ -119,6 +115,9 @@ export default function App() {
   // List：スワイプ中の追従用（なめらかさ向上）
   const [swipeDragTaskId, setSwipeDragTaskId] = useState(null);
   const [swipeDragDeltaX, setSwipeDragDeltaX] = useState(0);
+
+  // List：タスク詳細編集モーダル
+  const [editingTask, setEditingTask] = useState(null);
 
   // --- オフライン検知 ---
   useEffect(() => {
@@ -205,7 +204,6 @@ export default function App() {
           : t,
       ),
     );
-    setExpandedTaskId(null);
     setSwipeRevealTaskId(null);
     setSwipeDragTaskId(null);
     setSwipeDragDeltaX(0);
@@ -213,10 +211,39 @@ export default function App() {
 
   const deleteTaskPermanently = (id) => {
     setTasks((prev) => prev.filter((t) => t.id !== id));
-    setExpandedTaskId(null);
     setSwipeRevealTaskId(null);
     setSwipeDragTaskId(null);
     setSwipeDragDeltaX(0);
+  };
+
+  const openEditTask = (task) => {
+    setSwipeRevealTaskId(null);
+    setSwipeDragTaskId(null);
+    setSwipeDragDeltaX(0);
+    setEditingTask({
+      ...task,
+      updatedAt:
+        task.updatedAt instanceof Date ? task.updatedAt : new Date(task.updatedAt),
+    });
+  };
+
+  const handleSaveEditedTask = () => {
+    if (!editingTask) return;
+    if (!editingTask.name.trim()) return;
+
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === editingTask.id
+          ? {
+              ...editingTask,
+              name: editingTask.name.trim(),
+              totalScore: calculateTotalScore(editingTask, weights),
+              updatedAt: new Date(),
+            }
+          : t,
+      ),
+    );
+    setEditingTask(null);
   };
 
   // ソート処理
@@ -251,8 +278,6 @@ export default function App() {
   const clamp01 = (n) => Math.min(1, Math.max(0, n));
   const lerp = (a, b, t) => a + (b - a) * t;
   const rgbToCss = (r, g, b) => `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
-  const rgbaToCss = (r, g, b, a) =>
-    `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${a})`;
   const lerpColor = (c1, c2, t) => {
     const r = lerp(c1[0], c2[0], t);
     const g = lerp(c1[1], c2[1], t);
@@ -281,57 +306,28 @@ export default function App() {
 
     const pick = t < 0.5 ? lerpColor(blue, yellow, t * 2) : lerpColor(yellow, red, (t - 0.5) * 2);
     const stroke = rgbToCss(pick.r, pick.g, pick.b);
-    const fill = rgbaToCss(pick.r, pick.g, pick.b, 0.16);
 
-    // スコアに応じて正円を「大きく」しない（色だけ滑らかに変える）
-    const circleSize = 108;
     const fontSize = 60;
-
-    const isUrgent = currentTask.urgency >= 4;
 
     return (
       <div className="p-4 flex flex-col h-full pb-20 gap-4 overflow-hidden">
         {/* スコア表示エリア */}
-        <div
-          className={`flex-shrink-0 rounded-3xl border p-4 text-center shadow-sm transition-colors ${
-            isUrgent ? 'border-red-200 bg-red-50/40' : 'border-indigo-200 bg-white'
-          }`}
-        >
+        <div className="flex-shrink-0 rounded-3xl border border-indigo-200 bg-white p-4 text-center shadow-sm transition-colors">
           <h2 className="text-sm font-bold text-gray-600 mb-2 flex items-center justify-center gap-2">
-            <Activity size={16} className={isUrgent ? 'text-red-500' : 'text-indigo-600'} />
+            <Activity size={16} className="text-indigo-600" />
             リアルタイム優先度スコア
           </h2>
-
           <div
-            className="relative mx-auto flex items-center justify-center"
+            className="font-black tabular-nums leading-none"
             style={{
-              width: `${circleSize}px`,
-              height: `${circleSize}px`,
-              transition: 'width 0ms linear, height 0ms linear',
+              fontSize,
+              color: stroke,
+              transition: 'color 450ms ease, transform 450ms ease',
+              transform: isAnimating ? 'scale(1.04)' : 'scale(1)',
             }}
           >
-            <div
-              className="absolute inset-0 rounded-full"
-              style={{
-                backgroundColor: fill,
-                border: `2px solid ${stroke}`,
-                transition: 'background-color 450ms ease, border-color 450ms ease',
-              }}
-            />
-            <div
-              className="relative z-10 font-black tabular-nums leading-none"
-              style={{
-                fontSize,
-                color: stroke,
-                transition: 'font-size 450ms ease, color 450ms ease, transform 450ms ease',
-                transform: isAnimating ? 'scale(1.04)' : 'scale(1)',
-              }}
-            >
-              {displayScore}
-            </div>
+            {displayScore}
           </div>
-
-          {isUrgent && <p className="text-xs font-bold text-red-500 mt-2">🔥 緊急タスクです！</p>}
         </div>
 
         {/* 入力フォーム */}
@@ -364,16 +360,16 @@ export default function App() {
                           <Info size={14} />
                         </button>
                       </div>
-                      <span className="text-sm font-bold bg-gray-100 px-2 py-0.5 rounded-xl w-8 text-center">
-                        {currentTask[key]}
+                      <span className="text-sm font-bold bg-gray-100 px-2 py-0.5 rounded-xl min-w-[52px] text-center">
+                        {Number(currentTask[key]).toFixed(1)}
                       </span>
                     </div>
 
                     <input
                       type="range"
-                      min="1"
+                      min="1.0"
                       max="5"
-                      step="1"
+                      step="0.1"
                       value={currentTask[key]}
                       onChange={(e) =>
                         setCurrentTask({ ...currentTask, [key]: Number(e.target.value) })
@@ -394,6 +390,14 @@ export default function App() {
                       [&::-moz-range-thumb]:border-2
                       [&::-moz-range-thumb]:border-white"
                     />
+                    <div className="flex justify-between px-1 mt-1">
+                      {[1, 2, 3, 4, 5].map((tick) => (
+                        <span
+                          key={tick}
+                          className="w-1.5 h-1.5 rounded-full bg-gray-300 inline-block"
+                        />
+                      ))}
+                    </div>
                   </div>
                 );
               })}
@@ -419,10 +423,10 @@ export default function App() {
     const ACTION_WIDTH = 160;
 
     const TaskCard = ({ task }) => {
-      const isExpanded = expandedTaskId === task.id;
       const isRevealed = swipeRevealTaskId === task.id;
       const isDragging = swipeDragTaskId === task.id;
-      const clampedDragX = Math.min(0, Math.max(-ACTION_WIDTH, swipeDragDeltaX));
+      const clampedDragX = Math.max(-ACTION_WIDTH, Math.min(36, swipeDragDeltaX));
+      const RIGHT_SWIPE_COMPLETE_THRESHOLD = 95;
 
       const swipeHandlers = useSwipeable({
         onSwiping: ({ dir, deltaX }) => {
@@ -433,22 +437,28 @@ export default function App() {
             if (swipeRevealTaskId === task.id) setSwipeRevealTaskId(null);
           }
           if (dir === 'Right') {
-            // 既にボタンを出している場合、右ドラッグで閉じる
+            // 完了誤爆を防ぐ: 右スワイプ時は視覚的な移動のみ
             if (swipeRevealTaskId === task.id) {
               setSwipeRevealTaskId(null);
             }
             setSwipeDragTaskId(task.id);
-            setSwipeDragDeltaX(0);
+            setSwipeDragDeltaX(Math.max(0, Math.min(deltaX, RIGHT_SWIPE_COMPLETE_THRESHOLD + 20)));
           }
         },
         onSwipeEnd: () => {
           setSwipeDragTaskId(null);
           setSwipeDragDeltaX(0);
         },
-        onSwipedRight: () => updateTaskStatus(task.id, 'completed'),
+        onSwipedRight: ({ deltaX }) => {
+          // 一定距離以上でのみ完了扱い
+          if (deltaX >= RIGHT_SWIPE_COMPLETE_THRESHOLD) {
+            updateTaskStatus(task.id, 'completed');
+          } else {
+            setSwipeRevealTaskId(null);
+          }
+        },
         onSwipedLeft: () => {
           setSwipeRevealTaskId(task.id);
-          setExpandedTaskId(null);
           setSwipeDragTaskId(null);
           setSwipeDragDeltaX(0);
         },
@@ -465,8 +475,7 @@ export default function App() {
           setSwipeDragDeltaX(0);
           return;
         }
-        setSwipeRevealTaskId(null);
-        setExpandedTaskId((prev) => (prev === task.id ? null : task.id));
+        openEditTask(task);
       };
 
       return (
@@ -500,39 +509,27 @@ export default function App() {
               transition: isDragging ? 'none' : 'transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1)',
             }}
           >
-            <div className="p-3 flex items-start gap-3">
+            <div className="p-3 flex items-center gap-3">
               <button
                 type="button"
                 onClick={toggleExpanded}
-                className="flex-1 text-left"
-                aria-label={isExpanded ? '折りたたむ' : '展開する'}
+                className="flex-1 text-left flex items-center gap-3"
+                aria-label="タスク詳細を開く"
               >
-                <div className="font-bold text-gray-900 text-sm leading-snug">{task.name}</div>
-                <div className="mt-1 text-xs text-gray-500">{formatDate(task.updatedAt)}</div>
-              </button>
-              <div className="shrink-0 text-gray-400 mt-0.5">
-                {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-              </div>
-            </div>
-
-            <div className="px-3 pb-3 text-xs font-semibold text-indigo-600">
-              スコア {task.totalScore}
-            </div>
-
-            {isExpanded && (
-              <div className="px-3 pb-3">
-                <div className="flex flex-nowrap gap-2 overflow-x-auto">
-                  {CRITERIA_KEYS.map((key) => (
-                    <span
-                      key={key}
-                      className={`text-[11px] px-2.5 py-1 rounded-full border font-bold ${CRITERIA_INFO[key].text} border-current/15 bg-current/5 whitespace-nowrap`}
-                    >
-                      {CRITERIA_INFO[key].title} {task[key]}
-                    </span>
-                  ))}
+                <div className="font-bold text-gray-900 text-sm leading-snug truncate min-w-0 flex-1">
+                  {task.name}
                 </div>
+                <div className="text-xs text-gray-500 whitespace-nowrap">
+                  {formatDate(task.updatedAt)}
+                </div>
+              </button>
+              <div className="shrink-0 text-2xl font-black tabular-nums text-indigo-600 leading-none">
+                {task.totalScore}
               </div>
-            )}
+              <div className="shrink-0 text-gray-400">
+                <ChevronDown size={18} />
+              </div>
+            </div>
           </div>
         </div>
       );
@@ -582,6 +579,98 @@ export default function App() {
             ))
           )}
         </div>
+
+        {/* タスク詳細編集モーダル（計算タブと同じ構成） */}
+        {editingTask && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm">
+            <div className="bg-slate-50 rounded-3xl p-4 w-full max-w-md shadow-2xl border border-gray-200 max-h-[90vh] overflow-y-auto">
+              <div className="rounded-3xl border border-indigo-200 bg-white p-4 text-center shadow-sm mb-4">
+                <h3 className="text-sm font-bold text-gray-600 mb-2 flex items-center justify-center gap-2">
+                  <Activity size={16} className="text-indigo-600" />
+                  リアルタイム優先度スコア
+                </h3>
+                <div className="text-5xl font-black tabular-nums leading-none text-indigo-600">
+                  {calculateTotalScore(editingTask, weights)}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={editingTask.name}
+                  onChange={(e) => setEditingTask({ ...editingTask, name: e.target.value })}
+                  placeholder="タスク名"
+                  className="w-full p-3 border border-gray-300 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all placeholder:text-gray-400"
+                />
+
+                <div className="space-y-3 bg-white p-3 rounded-3xl border border-gray-100 shadow-sm">
+                  {CRITERIA_KEYS.map((key) => {
+                    const info = CRITERIA_INFO[key];
+                    return (
+                      <div key={key} className="space-y-1">
+                        <div className="flex justify-between items-center">
+                          <span className={`text-sm font-bold ${info.text}`}>{info.title}</span>
+                          <span className="text-sm font-bold bg-gray-100 px-2 py-0.5 rounded-xl min-w-[52px] text-center">
+                            {Number(editingTask[key]).toFixed(1)}
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="1.0"
+                          max="5.0"
+                          step="0.1"
+                          value={editingTask[key]}
+                          onChange={(e) =>
+                            setEditingTask({ ...editingTask, [key]: Number(e.target.value) })
+                          }
+                          className="w-full h-2 bg-gray-200 rounded-full appearance-none cursor-pointer accent-indigo-600
+                          [&::-webkit-slider-thumb]:appearance-none
+                          [&::-webkit-slider-thumb]:w-6
+                          [&::-webkit-slider-thumb]:h-6
+                          [&::-webkit-slider-thumb]:rounded-full
+                          [&::-webkit-slider-thumb]:bg-indigo-600
+                          [&::-webkit-slider-thumb]:border-2
+                          [&::-webkit-slider-thumb]:border-white
+                          [&::-webkit-slider-thumb]:shadow-sm
+                          [&::-moz-range-thumb]:w-6
+                          [&::-moz-range-thumb]:h-6
+                          [&::-moz-range-thumb]:rounded-full
+                          [&::-moz-range-thumb]:bg-indigo-600
+                          [&::-moz-range-thumb]:border-2
+                          [&::-moz-range-thumb]:border-white"
+                        />
+                        <div className="flex justify-between px-1 mt-1">
+                          {[1, 2, 3, 4, 5].map((tick) => (
+                            <span
+                              key={tick}
+                              className="w-1.5 h-1.5 rounded-full bg-gray-300 inline-block"
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={() => setEditingTask(null)}
+                    className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold rounded-xl transition-colors active:scale-95"
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    onClick={handleSaveEditedTask}
+                    disabled={!editingTask.name.trim()}
+                    className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl disabled:bg-gray-300 disabled:cursor-not-allowed active:scale-95 transition-all"
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -680,8 +769,8 @@ export default function App() {
     };
 
     return (
-      <div className="p-4 flex flex-col h-full pb-20 gap-4 overflow-hidden">
-        <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl text-sm text-indigo-800 space-y-2">
+      <div className="p-3 flex flex-col h-full pb-16 gap-3 overflow-hidden">
+        <div className="bg-indigo-50 border border-indigo-100 p-3 rounded-xl text-sm text-indigo-800 space-y-1.5">
           <p className="font-bold flex items-center gap-2">
             <Settings size={18} /> スコアの重み付け設定
           </p>
@@ -690,15 +779,15 @@ export default function App() {
           </p>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-hidden space-y-3">
-          <div className="space-y-3 bg-white p-4 rounded-3xl border border-gray-100 shadow-sm">
+        <div className="flex-1 min-h-0 overflow-hidden space-y-2.5">
+          <div className="space-y-2.5 bg-white p-3 rounded-3xl border border-gray-100 shadow-sm">
             {CRITERIA_KEYS.map((key) => {
               const info = CRITERIA_INFO[key];
               return (
                 <div key={key} className="space-y-2">
                   <div className="flex justify-between items-center">
                     <span className={`text-sm font-bold ${info.text}`}>{info.title}</span>
-                    <span className="text-sm font-black text-gray-700 bg-gray-100 px-2 py-1 rounded-xl w-12 text-center">
+                    <span className="text-sm font-black text-gray-700 bg-gray-100 px-2 py-0.5 rounded-xl w-12 text-center">
                       x{weights[key].toFixed(1)}
                     </span>
                   </div>
@@ -740,7 +829,7 @@ export default function App() {
 
           {/* アーカイブ/削除済み管理 */}
           <div className="bg-white border border-gray-100 rounded-3xl p-4 shadow-sm">
-            <div className="font-bold text-gray-900 text-sm mb-3">タスク管理</div>
+            <div className="font-bold text-gray-900 text-sm mb-2">タスク管理</div>
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => setSettingsManageView('archived')}
